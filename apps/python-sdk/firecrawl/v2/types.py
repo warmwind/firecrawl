@@ -1070,6 +1070,8 @@ class SearchRequest(BaseModel):
     query: str
     sources: Optional[List[SourceOption]] = None
     categories: Optional[List[CategoryOption]] = None
+    include_domains: Optional[List[str]] = None
+    exclude_domains: Optional[List[str]] = None
     limit: Optional[int] = 5
     tbs: Optional[str] = None
     location: Optional[str] = None

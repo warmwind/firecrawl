@@ -20,6 +20,8 @@ export async function search({
   timeout = 5000,
   type = undefined,
   enterprise = undefined,
+  include_domains = undefined,
+  exclude_domains = undefined,
 }: {
   query: string;
   logger: Logger;
@@ -35,6 +37,8 @@ export async function search({
   timeout?: number;
   type?: SearchResultType | SearchResultType[];
   enterprise?: ("default" | "anon" | "zdr")[];
+  include_domains?: string[];
+  exclude_domains?: string[];
 }): Promise<SearchV2Response> {
   try {
     if (config.FIRE_ENGINE_BETA_URL) {
@@ -48,6 +52,8 @@ export async function search({
         location,
         type,
         enterprise,
+        include_domains,
+        exclude_domains,
       });
 
       return results;

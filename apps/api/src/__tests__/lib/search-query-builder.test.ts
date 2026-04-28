@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import {
   buildSearchQuery,
+  applyDomainFiltersToQuery,
   getCategoryFromUrl,
   getDefaultResearchSites,
 } from "../../lib/search-query-builder";
@@ -109,6 +110,50 @@ describe("Search Query Builder", () => {
       const result = buildSearchQuery("test", [{ type: "invalid" as any }]);
       expect(result.query).toBe("test");
       expect(result.categoryMap.size).toBe(0);
+    });
+  });
+
+  describe("applyDomainFiltersToQuery", () => {
+    it("should return base query when no filters provided", () => {
+      expect(applyDomainFiltersToQuery("firecrawl")).toBe("firecrawl");
+      expect(applyDomainFiltersToQuery("firecrawl", {})).toBe("firecrawl");
+    });
+
+    it("should append include domains as OR group", () => {
+      expect(
+        applyDomainFiltersToQuery("firecrawl", {
+          includeDomains: ["docs.firecrawl.dev", "firecrawl.dev"],
+        }),
+      ).toBe("firecrawl (site:docs.firecrawl.dev OR site:firecrawl.dev)");
+    });
+
+    it("should append exclude domains as -site: tokens", () => {
+      expect(
+        applyDomainFiltersToQuery("firecrawl", {
+          excludeDomains: ["medium.com", "example.com"],
+        }),
+      ).toBe("firecrawl -site:medium.com -site:example.com");
+    });
+
+    it("should support both include and exclude", () => {
+      expect(
+        applyDomainFiltersToQuery("firecrawl", {
+          includeDomains: ["firecrawl.dev"],
+          excludeDomains: ["medium.com"],
+        }),
+      ).toBe("firecrawl (site:firecrawl.dev) -site:medium.com");
+    });
+
+    it("should normalize urls and dedupe domains", () => {
+      expect(
+        applyDomainFiltersToQuery("x", {
+          includeDomains: [
+            "https://docs.firecrawl.dev/path",
+            "docs.firecrawl.dev",
+            "www.docs.firecrawl.dev",
+          ],
+        }),
+      ).toBe("x (site:docs.firecrawl.dev)");
     });
   });
 

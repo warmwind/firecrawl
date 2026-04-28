@@ -1703,6 +1703,44 @@ const pdfCategoryOptions = z.strictObject({
   type: z.literal("pdf"),
 });
 
+const domainString = z
+  .string()
+  .min(1)
+  .max(253)
+  .transform(val => val.trim().toLowerCase())
+  .transform(val => {
+    // Accept full URLs; normalize to host.
+    if (val.includes("://")) {
+      try {
+        return new URL(val).hostname.toLowerCase();
+      } catch {
+        return val;
+      }
+    }
+    // Accept URL-ish input without protocol (e.g. example.com/path)
+    if (val.includes("/")) {
+      try {
+        return new URL(`http://${val}`).hostname.toLowerCase();
+      } catch {
+        return val;
+      }
+    }
+    return val;
+  })
+  .transform(val => val.replace(/^www\./, ""))
+  .refine(
+    val =>
+      // Basic domain safety: no schemes, no spaces, no path/query.
+      !val.includes("://") &&
+      !/\s/.test(val) &&
+      !val.includes("/") &&
+      !val.includes("?") &&
+      !val.includes("#") &&
+      // Require at least one dot to avoid obviously-invalid hosts.
+      val.includes("."),
+    "Invalid domain. Provide a hostname like 'example.com'.",
+  );
+
 export const searchRequestSchema = z
   .strictObject({
     query: z.string(),
@@ -1742,6 +1780,31 @@ export const searchRequestSchema = z
     enterprise: z.array(z.enum(["default", "anon", "zdr"])).optional(),
     country: z.string().optional(),
     location: z.string().optional(),
+    include_domains: z
+      .preprocess(
+        val => (typeof val === "string" ? [val] : val),
+        domainString.array().max(50).optional(),
+      )
+      .optional(),
+    exclude_domains: z
+      .preprocess(
+        val => (typeof val === "string" ? [val] : val),
+        domainString.array().max(50).optional(),
+      )
+      .optional(),
+    // CamelCase aliases for SDKs / JS clients
+    includeDomains: z
+      .preprocess(
+        val => (typeof val === "string" ? [val] : val),
+        domainString.array().max(50).optional(),
+      )
+      .optional(),
+    excludeDomains: z
+      .preprocess(
+        val => (typeof val === "string" ? [val] : val),
+        domainString.array().max(50).optional(),
+      )
+      .optional(),
     origin: z.string().optional().prefault("api"),
     integration: integrationSchema.optional().transform(val => val || null),
     timeout: z.int().positive().finite().prefault(60000),
@@ -1866,6 +1929,8 @@ export const searchRequestSchema = z
       country,
       sources,
       categories,
+      include_domains: x.include_domains ?? x.includeDomains,
+      exclude_domains: x.exclude_domains ?? x.excludeDomains,
       scrapeOptions: extractTransform(x.scrapeOptions),
     };
   });

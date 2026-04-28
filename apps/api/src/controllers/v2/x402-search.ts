@@ -27,6 +27,7 @@ import {
   buildSearchQuery,
   getCategoryFromUrl,
   CategoryOption,
+  applyDomainFiltersToQuery,
 } from "../../lib/search-query-builder";
 import {
   applyZdrScope,
@@ -285,9 +286,13 @@ export async function x402SearchController(
       req.body.query,
       req.body.categories as CategoryOption[],
     );
+    const finalQuery = applyDomainFiltersToQuery(searchQuery, {
+      includeDomains: (req.body as any).include_domains,
+      excludeDomains: (req.body as any).exclude_domains,
+    });
 
     const searchResponse = (await search({
-      query: searchQuery,
+      query: finalQuery,
       logger,
       advanced: false,
       num_results: num_results_buffer,
@@ -298,6 +303,8 @@ export async function x402SearchController(
       location: req.body.location,
       type: searchTypes,
       enterprise: req.body.enterprise,
+      include_domains: (req.body as any).include_domains,
+      exclude_domains: (req.body as any).exclude_domains,
     })) as SearchV2Response;
 
     // Add category labels to web results

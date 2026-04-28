@@ -129,6 +129,18 @@ def _validate_search_request(request: SearchRequest) -> SearchRequest:
     if request.scrape_options is not None:
         validate_scrape_options(request.scrape_options)
 
+    for field_name in ("include_domains", "exclude_domains"):
+        domains = getattr(request, field_name, None)
+        if domains is None:
+            continue
+        if not isinstance(domains, list):
+            raise ValueError(f"{field_name} must be a list of strings")
+        if len(domains) > 50:
+            raise ValueError(f"{field_name} cannot exceed 50 entries")
+        for d in domains:
+            if not isinstance(d, str) or not d.strip():
+                raise ValueError(f"{field_name} must contain non-empty strings")
+
     return request
 
 def _prepare_search_request(request: SearchRequest) -> Dict[str, Any]:

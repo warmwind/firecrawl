@@ -155,6 +155,19 @@ def _validate_search_request(request: SearchRequest) -> SearchRequest:
     # Validate scrape_options (if provided)
     if request.scrape_options is not None:
         validate_scrape_options(request.scrape_options)
+
+    # Validate domain filters (best-effort; API also validates)
+    for field_name in ("include_domains", "exclude_domains"):
+        domains = getattr(request, field_name, None)
+        if domains is None:
+            continue
+        if not isinstance(domains, list):
+            raise ValueError(f"{field_name} must be a list of strings")
+        if len(domains) > 50:
+            raise ValueError(f"{field_name} cannot exceed 50 entries")
+        for d in domains:
+            if not isinstance(d, str) or not d.strip():
+                raise ValueError(f"{field_name} must contain non-empty strings")
     
     return request
 
@@ -192,6 +205,8 @@ def _prepare_search_request(request: SearchRequest) -> Dict[str, Any]:
         if scrape_data:
             data["scrapeOptions"] = scrape_data
         data.pop("scrape_options", None)
+
+    # include_domains / exclude_domains are supported as-is (snake_case)
     
     # Only include integration if it was explicitly provided and non-empty
     integration_value = getattr(validated_request, "integration", None)

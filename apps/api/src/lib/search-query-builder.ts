@@ -15,6 +15,11 @@ interface QueryBuilderResult {
   categoryMap: Map<string, string>;
 }
 
+export interface DomainFilters {
+  includeDomains?: string[];
+  excludeDomains?: string[];
+}
+
 // Default research sites
 const DEFAULT_RESEARCH_SITES = [
   "arxiv.org",
@@ -105,6 +110,70 @@ export function buildSearchQuery(
     query: baseQuery + categoryFilter,
     categoryMap,
   };
+}
+
+function normalizeDomains(domains: string[] | undefined): string[] {
+  if (!domains) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of domains) {
+    if (!raw) continue;
+    let d = String(raw).trim().toLowerCase();
+    if (!d) continue;
+
+    // Allow passing full URLs; normalize to host.
+    if (d.includes("://")) {
+      try {
+        d = new URL(d).hostname.toLowerCase();
+      } catch {
+        // keep as-is; validation should happen at request schema layer
+      }
+    } else if (d.includes("/")) {
+      // If someone passed a URL without protocol, try to parse.
+      try {
+        d = new URL(`http://${d}`).hostname.toLowerCase();
+      } catch {
+        // keep as-is
+      }
+    }
+
+    // Trim common prefixes.
+    d = d.replace(/^\.+/, "").replace(/^www\./, "");
+
+    if (!d || seen.has(d)) continue;
+    seen.add(d);
+    out.push(d);
+  }
+
+  return out;
+}
+
+/**
+ * Applies domain include/exclude filters to a query using common "site:" operators.
+ * This is a best-effort mechanism for engines that support query operators.
+ */
+export function applyDomainFiltersToQuery(
+  baseQuery: string,
+  filters?: DomainFilters,
+): string {
+  if (!filters) return baseQuery;
+
+  const includeDomains = normalizeDomains(filters.includeDomains);
+  const excludeDomains = normalizeDomains(filters.excludeDomains);
+
+  let out = baseQuery;
+
+  if (includeDomains.length > 0) {
+    out +=
+      " (" + includeDomains.map(d => `site:${d}`).join(" OR ") + ")";
+  }
+
+  if (excludeDomains.length > 0) {
+    out += " " + excludeDomains.map(d => `-site:${d}`).join(" ");
+  }
+
+  return out;
 }
 
 /**

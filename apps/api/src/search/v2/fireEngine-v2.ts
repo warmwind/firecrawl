@@ -49,6 +49,8 @@ export async function fire_engine_search_v2(
     page?: number;
     type?: SearchResultType | SearchResultType[];
     enterprise?: ("default" | "anon" | "zdr")[];
+    include_domains?: string[];
+    exclude_domains?: string[];
   },
   abort?: AbortSignal,
 ): Promise<SearchV2Response> {
@@ -69,6 +71,8 @@ export async function fire_engine_search_v2(
     page: options.page ?? 1,
     type: options.type || "web",
     enterprise: options.enterprise,
+    include_domains: options.include_domains,
+    exclude_domains: options.exclude_domains,
   };
 
   const requestedTypes = normalizeSearchTypes(options.type);

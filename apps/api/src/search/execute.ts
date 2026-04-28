@@ -5,6 +5,7 @@ import {
   buildSearchQuery,
   getCategoryFromUrl,
   CategoryOption,
+  applyDomainFiltersToQuery,
 } from "../lib/search-query-builder";
 import { ScrapeOptions, TeamFlags } from "../controllers/v2/types";
 import {
@@ -26,6 +27,8 @@ interface SearchOptions {
   location?: string;
   sources: Array<{ type: string }>;
   categories?: CategoryOption[];
+  include_domains?: string[];
+  exclude_domains?: string[];
   enterprise?: ("default" | "anon" | "zdr")[];
   scrapeOptions?: ScrapeOptions;
   timeout: number;
@@ -80,9 +83,13 @@ export async function executeSearch(
     query,
     categories,
   );
+  const finalQuery = applyDomainFiltersToQuery(searchQuery, {
+    includeDomains: options.include_domains,
+    excludeDomains: options.exclude_domains,
+  });
 
   const searchResponse = (await search({
-    query: searchQuery,
+    query: finalQuery,
     logger,
     advanced: false,
     num_results: num_results_buffer,
@@ -93,6 +100,8 @@ export async function executeSearch(
     location: options.location,
     type: searchTypes,
     enterprise: options.enterprise,
+    include_domains: options.include_domains,
+    exclude_domains: options.exclude_domains,
   })) as SearchV2Response;
 
   if (searchResponse.web && searchResponse.web.length > 0) {
