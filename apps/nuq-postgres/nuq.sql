@@ -105,6 +105,9 @@ CREATE INDEX IF NOT EXISTS nuq_queue_scrape_backlog_owner_id_idx ON nuq.queue_sc
 -- For getGroupNumericStats backlog query: query by group_id and data->>'mode' on backlog table
 CREATE INDEX IF NOT EXISTS nuq_queue_scrape_backlog_group_mode_idx ON nuq.queue_scrape_backlog (group_id) WHERE ((data->>'mode') = 'single_urls');
 
+-- For nuq_queue_scrape_backlog_reaper: avoid seq scan over the entire backlog every minute
+CREATE INDEX IF NOT EXISTS nuq_queue_scrape_backlog_times_out_at_idx ON nuq.queue_scrape_backlog (times_out_at);
+
 SELECT cron.schedule('nuq_queue_scrape_clean_completed', '*/5 * * * *', $$
   DELETE FROM nuq.queue_scrape WHERE nuq.queue_scrape.status = 'completed'::nuq.job_status AND nuq.queue_scrape.created_at < now() - interval '1 hour' AND group_id IS NULL;
 $$);
@@ -120,13 +123,30 @@ SELECT cron.schedule('nuq_queue_scrape_lock_reaper', '15 seconds', $$
 $$);
 
 SELECT cron.schedule('nuq_queue_scrape_backlog_reaper', '* * * * *', $$
+  SET statement_timeout = '50s';
   DELETE FROM nuq.queue_scrape_backlog
   WHERE nuq.queue_scrape_backlog.times_out_at < now();
 $$);
 
-SELECT cron.schedule('nuq_queue_scrape_reindex', '0 9 * * *', $$
-  REINDEX TABLE CONCURRENTLY nuq.queue_scrape;
-$$);
+-- Per-index REINDEX CONCURRENTLY, spread across the global low-traffic window
+-- (02:00-04:40 UTC). Each is bounded by statement_timeout so a stuck reindex
+-- self-aborts instead of blocking autovacuum for hours. REINDEX INDEX takes a
+-- ShareUpdateExclusiveLock only on the target index, not the whole table.
+SELECT cron.schedule('nuq_reindex_queue_scrape_pkey',                   '0 2 * * *',  $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.queue_scrape_pkey; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_active_locked_at',       '20 2 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.queue_scrape_active_locked_at_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_queued_optimal_2',       '40 2 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_queued_optimal_2_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_failed_created_at',      '0 3 * * *',  $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_failed_created_at_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_completed_created_at',   '20 3 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_completed_created_at_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_group_owner_mode',       '40 3 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_group_owner_mode_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_group_mode_status',      '0 4 * * *',  $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_group_mode_status_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_group_completed_listing','20 4 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_group_completed_listing_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_group_status',           '40 4 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.idx_queue_scrape_group_status; $$);
+
+SELECT cron.schedule('nuq_reindex_queue_scrape_backlog_pkey',           '0 5 * * *',  $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.queue_scrape_backlog_pkey; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_backlog_owner_id',       '20 5 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_backlog_owner_id_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_backlog_group_mode',     '40 5 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_backlog_group_mode_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_backlog_group_id',       '0 6 * * *',  $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.idx_queue_scrape_backlog_group_id; $$);
+SELECT cron.schedule('nuq_reindex_queue_scrape_backlog_times_out_at',   '20 6 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_scrape_backlog_times_out_at_idx; $$);
 
 CREATE TABLE IF NOT EXISTS nuq.queue_crawl_finished (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -171,9 +191,12 @@ SELECT cron.schedule('nuq_queue_crawl_finished_lock_reaper', '15 seconds', $$
   SELECT pg_notify('nuq.queue_crawl_finished', (id::text || '|' || 'failed'::text)) FROM stallfail;
 $$);
 
-SELECT cron.schedule('nuq_queue_crawl_finished_reindex', '0 9 * * *', $$
-  REINDEX TABLE CONCURRENTLY nuq.queue_crawl_finished;
-$$);
+-- Per-index REINDEX CONCURRENTLY for queue_crawl_finished.
+SELECT cron.schedule('nuq_reindex_queue_crawl_finished_pkey',                 '0 7 * * *',  $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.queue_crawl_finished_pkey; $$);
+SELECT cron.schedule('nuq_reindex_queue_crawl_finished_active_locked_at',     '20 7 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.queue_crawl_finished_active_locked_at_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_crawl_finished_queued_optimal_2',     '40 7 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_crawl_finished_queued_optimal_2_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_crawl_finished_failed_created_at',    '0 8 * * *',  $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_crawl_finished_failed_created_at_idx; $$);
+SELECT cron.schedule('nuq_reindex_queue_crawl_finished_completed_created_at', '20 8 * * *', $$ SET statement_timeout = '20min'; REINDEX INDEX CONCURRENTLY nuq.nuq_queue_crawl_finished_completed_created_at_idx; $$);
 
 CREATE TABLE IF NOT EXISTS nuq.group_crawl (
   id uuid NOT NULL,
@@ -214,6 +237,7 @@ SELECT cron.schedule('nuq_group_crawl_finished', '15 seconds', $$
 $$);
 
 SELECT cron.schedule('nuq_group_crawl_clean', '*/5 * * * *', $$
+  SET statement_timeout = '4min';
   WITH cleaned_groups AS (
     DELETE FROM nuq.group_crawl
     WHERE nuq.group_crawl.status = 'completed'::nuq.group_status
