@@ -61,10 +61,6 @@ export async function scrapePDFWithFirePDFAsync(
     return fallbackImpl(meta, base64Content, maxPages, pagesProcessed, mode);
   }
 
-  const authHeader: Record<string, string> = config.FIRE_PDF_API_KEY
-    ? { Authorization: `Bearer ${config.FIRE_PDF_API_KEY}` }
-    : {};
-
   const overallStartedAt = now();
   const submitTime = now();
   const deadlineFromNow = computeDeadlineMs(meta.abort.scrapeTimeout());
@@ -84,7 +80,6 @@ export async function scrapePDFWithFirePDFAsync(
   const submit = await submitJob({
     meta,
     baseUrl,
-    authHeader,
     base64Content,
     maxPages,
     pagesProcessed,
@@ -105,7 +100,6 @@ export async function scrapePDFWithFirePDFAsync(
     : await pollUntilTerminal({
         baseUrl,
         scrapeId: meta.id,
-        authHeader,
         initialDelay: submit.retryAfterMs ?? POLL_FLOOR_MS,
         pollingDeadline,
         meta,
@@ -120,7 +114,6 @@ export async function scrapePDFWithFirePDFAsync(
   const fetched = await fetchResult({
     baseUrl,
     scrapeId: meta.id,
-    authHeader,
     meta,
     fetchImpl,
     sleep,

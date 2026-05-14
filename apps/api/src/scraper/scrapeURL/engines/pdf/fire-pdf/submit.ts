@@ -19,7 +19,6 @@ export type SubmitOutcome =
 export type SubmitArgs = {
   meta: Meta;
   baseUrl: string;
-  authHeader: Record<string, string>;
   base64Content: string;
   maxPages: number | undefined;
   pagesProcessed: number | undefined;
@@ -33,7 +32,6 @@ export async function submitJob(args: SubmitArgs): Promise<SubmitOutcome> {
   const {
     meta,
     baseUrl,
-    authHeader,
     base64Content,
     maxPages,
     pagesProcessed,
@@ -68,7 +66,7 @@ export async function submitJob(args: SubmitArgs): Promise<SubmitOutcome> {
   try {
     const resp = await fetchImpl(`${baseUrl}/jobs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeader },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: meta.abort.asSignal(),
     });

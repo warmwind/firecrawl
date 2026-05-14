@@ -12,7 +12,6 @@ import type { Fallback } from "./utils";
 export type ResultDeps = {
   baseUrl: string;
   scrapeId: string;
-  authHeader: Record<string, string>;
   meta: Meta;
   fetchImpl: typeof undiciFetch;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -24,8 +23,7 @@ export type ResultOutcome =
   | { kind: "fallback"; result: PDFProcessorResult };
 
 export async function fetchResult(deps: ResultDeps): Promise<ResultOutcome> {
-  const { baseUrl, scrapeId, authHeader, meta, fetchImpl, sleep, fallback } =
-    deps;
+  const { baseUrl, scrapeId, meta, fetchImpl, sleep, fallback } = deps;
   let retried409 = 0;
 
   while (true) {
@@ -33,7 +31,6 @@ export async function fetchResult(deps: ResultDeps): Promise<ResultOutcome> {
     try {
       resp = await fetchImpl(`${baseUrl}/jobs/${scrapeId}/result`, {
         method: "GET",
-        headers: { ...authHeader },
         signal: meta.abort.asSignal(),
       });
     } catch (error) {

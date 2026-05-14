@@ -17,7 +17,6 @@ import { nextPollDelay, type Fallback } from "./utils";
 export type PollDeps = {
   baseUrl: string;
   scrapeId: string;
-  authHeader: Record<string, string>;
   initialDelay: number;
   pollingDeadline: number;
   meta: Meta;
@@ -37,7 +36,6 @@ export async function pollUntilTerminal(
   const {
     baseUrl,
     scrapeId,
-    authHeader,
     pollingDeadline,
     meta,
     fetchImpl,
@@ -65,7 +63,6 @@ export async function pollUntilTerminal(
     try {
       pollResp = await fetchImpl(`${baseUrl}/jobs/${scrapeId}`, {
         method: "GET",
-        headers: { ...authHeader },
         signal: meta.abort.asSignal(),
       });
     } catch (error) {
