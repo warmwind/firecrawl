@@ -37,12 +37,6 @@ export async function scrapePDFWithFirePDFAsync(
   const sleep = deps.sleepImpl ?? defaultSleep;
   const now = deps.nowImpl ?? Date.now;
 
-  // Defense in depth: ZDR must never use async. The call site is the primary
-  // gate; if anything ever routes here with zdr=true, hand straight to sync.
-  if (meta.internalOptions.zeroDataRetention === true) {
-    return fallbackImpl(meta, base64Content, maxPages, pagesProcessed, mode);
-  }
-
   const cached = await tryGetCached(
     meta,
     base64Content,

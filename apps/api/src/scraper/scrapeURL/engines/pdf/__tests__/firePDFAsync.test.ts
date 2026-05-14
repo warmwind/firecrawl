@@ -524,32 +524,6 @@ describe("scrapePDFWithFirePDFAsync", () => {
     expect(calls).toHaveLength(4);
   });
 
-  it("zdr=true short-circuits to sync without any fetch", async () => {
-    const fetchImpl = jest.fn();
-    const fallback = jest.fn(async () => ({
-      markdown: "sync-zdr",
-      html: "",
-      pagesProcessed: 0,
-    }));
-
-    const meta = makeMeta({
-      internalOptions: { zeroDataRetention: true, teamId: "t" },
-    });
-
-    const result = await scrapePDFWithFirePDFAsync(
-      meta,
-      "BASE64",
-      undefined,
-      undefined,
-      undefined,
-      { fetchImpl: fetchImpl as any, fallbackImpl: fallback, sleepImpl: noopSleep },
-    );
-
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(fallback).toHaveBeenCalledTimes(1);
-    expect(result.markdown).toBe("sync-zdr");
-  });
-
   it("deadline_at is within the spec'd [5s, 30min] window", async () => {
     let submittedBody: any;
     const fetchImpl: any = async (url: string, init: any) => {

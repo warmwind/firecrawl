@@ -401,13 +401,10 @@ export async function scrapePDF(meta: Meta): Promise<EngineScrapeResult> {
           Math.random() * 100 < config.FIRE_PDF_PERCENT);
 
       if (useFirePDF) {
-        // Per-request opt-in to async fire-pdf pipeline. ZDR traffic must
-        // never use async (zdr=true is rejected by the /jobs handler); gate
-        // upstream so we don't even try. Async client falls back to sync
-        // on any failure, so behaviour stays bounded by the sync path.
-        const useAsync =
-          getFirePdfAsync(meta.options.parsers) &&
-          !meta.internalOptions.zeroDataRetention;
+        // Per-request opt-in to async fire-pdf pipeline. Async client falls
+        // back to sync on any failure, so behaviour stays bounded by the
+        // sync path.
+        const useAsync = getFirePdfAsync(meta.options.parsers);
         try {
           result = await (useAsync
             ? scrapePDFWithFirePDFAsync
