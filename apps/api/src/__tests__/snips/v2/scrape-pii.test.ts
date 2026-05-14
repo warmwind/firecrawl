@@ -58,12 +58,41 @@ describeIf(ALLOW_TEST_SUITE_WEBSITE)("V2 Scrape redactPII (schema)", () => {
   );
 
   it.concurrent(
-    "rejects redactPII passed as an object",
+    "accepts redactPII as an options object with mode/entities/replaceStyle",
     async () => {
       const res = await scrapeRaw(
         {
           url: "https://firecrawl.dev",
           formats: ["markdown", "pii"],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          redactPII: {
+            mode: "accurate",
+            entities: ["EMAIL", "PHONE"],
+            replaceStyle: "tag",
+          } as any,
+        },
+        identity,
+      );
+
+      // The page may not have PII (so spans can be empty), but the
+      // request itself must validate and the response must include
+      // the `pii` block.
+      expect(res.statusCode).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.pii).toBeDefined();
+    },
+    scrapeTimeout,
+  );
+
+  it.concurrent(
+    "rejects an unknown mode value",
+    async () => {
+      const res = await scrapeRaw(
+        {
+          url: "https://firecrawl.dev",
+          formats: ["markdown", "pii"],
+          // "model" is the fire-privacy internal mode, not the
+          // public surface — must be rejected.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           redactPII: { mode: "model" } as any,
         },

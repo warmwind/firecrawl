@@ -259,4 +259,234 @@ describe("redactText", () => {
       language: "en",
     });
   });
+
+  // ---- mode + replaceStyle mapping ----------------------------------------
+
+  it("maps each public mode to the fire-privacy internal mode", async () => {
+    const cases: Array<
+      ["accurate" | "aggressive" | "fast", "model" | "both" | "heuristics"]
+    > = [
+      ["accurate", "model"],
+      ["aggressive", "both"],
+      ["fast", "heuristics"],
+    ];
+    for (const [external, internalMode] of cases) {
+      let captured: Record<string, unknown> | undefined;
+      handler = async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+        captured = JSON.parse(Buffer.concat(chunks).toString());
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            redacted_text: "x",
+            spans: [],
+            model_status: "ok",
+          }),
+        );
+      };
+      await redactText({
+        text: "x",
+        options: { mode: external, replaceStyle: "tag" },
+      });
+      expect(captured?.mode).toBe(internalMode);
+    }
+  });
+
+  it("maps each replaceStyle to the fire-privacy operator", async () => {
+    const cases: Array<
+      ["tag" | "mask" | "remove", "replace" | "mask" | "redact"]
+    > = [
+      ["tag", "replace"],
+      ["mask", "mask"],
+      ["remove", "redact"],
+    ];
+    for (const [external, operator] of cases) {
+      let captured: Record<string, unknown> | undefined;
+      handler = async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+        captured = JSON.parse(Buffer.concat(chunks).toString());
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            redacted_text: "x",
+            spans: [],
+            model_status: "ok",
+          }),
+        );
+      };
+      await redactText({
+        text: "x",
+        options: { mode: "accurate", replaceStyle: external },
+      });
+      expect(captured?.operator).toBe(operator);
+    }
+  });
+
+  // ---- entities filter ----------------------------------------------------
+
+  it("filters spans to the requested entities and re-renders markdown", async () => {
+    handler = withBody({
+      redacted_text:
+        "Hi, my name is <PRIVATE_PERSON>. Email me at <EMAIL_ADDRESS>.",
+      spans: [
+        {
+          start: 15,
+          end: 26,
+          kind: "PRIVATE_PERSON",
+          score: 1.0,
+          source: "openai-privacy-filter",
+        },
+        {
+          start: 40,
+          end: 57,
+          kind: "EMAIL_ADDRESS",
+          score: 1.0,
+          source: "EmailRecognizer",
+        },
+      ],
+      model_status: "ok",
+    });
+
+    const source = "Hi, my name is Alice Smith. Email me at alice@example.com.";
+    const out = await redactText({
+      text: source,
+      options: {
+        mode: "accurate",
+        replaceStyle: "tag",
+        entities: ["EMAIL"],
+      },
+    });
+
+    expect(out.status).toBe("ok");
+    // Person span filtered out; email retained.
+    expect(out.spans).toHaveLength(1);
+    expect(out.spans[0].kind).toBe("EMAIL_ADDRESS");
+    // Markdown re-rendered from the filtered span set: name stays, email
+    // gets replaced with the kind tag.
+    expect(out.redactedMarkdown).toBe(
+      "Hi, my name is Alice Smith. Email me at <EMAIL_ADDRESS>.",
+    );
+  });
+
+  it("uses upstream redacted_text when no entity filter is set", async () => {
+    handler = withBody({
+      redacted_text: "<PRIVATE_PERSON>",
+      spans: [
+        {
+          start: 0,
+          end: 11,
+          kind: "PRIVATE_PERSON",
+          score: 1.0,
+          source: "openai-privacy-filter",
+        },
+      ],
+      model_status: "ok",
+    });
+
+    const out = await redactText({
+      text: "Alice Smith",
+      options: { mode: "accurate", replaceStyle: "tag" },
+    });
+
+    expect(out.redactedMarkdown).toBe("<PRIVATE_PERSON>");
+  });
+
+  it("drops spans whose kind doesn't map to any allowed entity", async () => {
+    handler = withBody({
+      redacted_text: "x",
+      spans: [
+        // Kind isn't in the unified taxonomy → drops under any allowlist.
+        { start: 0, end: 5, kind: "ORGANIZATION", score: 1.0, source: "x" },
+      ],
+      model_status: "ok",
+    });
+
+    const out = await redactText({
+      text: "ABCDE end",
+      options: {
+        mode: "accurate",
+        replaceStyle: "tag",
+        entities: ["PERSON", "EMAIL"],
+      },
+    });
+
+    expect(out.spans).toEqual([]);
+    expect(out.redactedMarkdown).toBe("ABCDE end");
+  });
+
+  it("re-renders with mask style preserving span length", async () => {
+    // Source: "Alice Smith - email alice@example.com" (37 chars)
+    // Person spans 0..11, email spans 20..37.
+    handler = withBody({
+      redacted_text: "***********",
+      spans: [
+        {
+          start: 0,
+          end: 11,
+          kind: "PRIVATE_PERSON",
+          score: 1.0,
+          source: "openai-privacy-filter",
+        },
+        {
+          start: 20,
+          end: 37,
+          kind: "EMAIL_ADDRESS",
+          score: 1.0,
+          source: "EmailRecognizer",
+        },
+      ],
+      model_status: "ok",
+    });
+
+    const source = "Alice Smith - email alice@example.com";
+    const out = await redactText({
+      text: source,
+      options: {
+        mode: "accurate",
+        replaceStyle: "mask",
+        entities: ["EMAIL"], // filter triggers re-render
+      },
+    });
+
+    expect(out.redactedMarkdown).toBe("Alice Smith - email *****************");
+  });
+
+  it("re-renders with remove style dropping span characters", async () => {
+    handler = withBody({
+      redacted_text: "",
+      spans: [
+        {
+          start: 0,
+          end: 11,
+          kind: "PRIVATE_PERSON",
+          score: 1.0,
+          source: "openai-privacy-filter",
+        },
+        {
+          start: 20,
+          end: 37,
+          kind: "EMAIL_ADDRESS",
+          score: 1.0,
+          source: "EmailRecognizer",
+        },
+      ],
+      model_status: "ok",
+    });
+
+    const source = "Alice Smith - email alice@example.com";
+    const out = await redactText({
+      text: source,
+      options: {
+        mode: "accurate",
+        replaceStyle: "remove",
+        entities: ["PERSON"],
+      },
+    });
+
+    expect(out.redactedMarkdown).toBe(" - email alice@example.com");
+  });
 });

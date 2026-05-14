@@ -523,6 +523,51 @@ const locationSchema = z
   })
   .optional();
 
+// Unified entity taxonomy exposed to callers. Maps to fire-privacy's
+// internal span kinds (PRIVATE_PERSON / EMAIL_ADDRESS / ACCOUNT_NUMBER /
+// etc.) inside the fire-privacy client. Names chosen to match the public
+// surface; if a caller asks for "EMAIL" they get email-shaped spans
+// regardless of which recognizer found them.
+const REDACT_PII_ENTITIES = [
+  "PERSON",
+  "EMAIL",
+  "PHONE",
+  "LOCATION",
+  "FINANCIAL",
+  "SECRET",
+] as const;
+const redactPIIEntitySchema = z.enum(REDACT_PII_ENTITIES);
+export type RedactPIIEntity = z.infer<typeof redactPIIEntitySchema>;
+
+// Public mode names. Mapped to fire-privacy internal modes
+// (model / both / heuristics) inside the client; the internal "precise"
+// mode is intentionally not exposed.
+//
+// - accurate (default): model only. Best precision (0.87), F1 (0.73).
+//   Cleanest redacted output.
+// - aggressive: model + Presidio + spaCy. Higher recall (0.73) at the
+//   cost of precision (0.68). Compliance use cases.
+// - fast: Presidio only, no model call. ~2x throughput, lower F1.
+const redactPIIOptionsSchema = z.strictObject({
+  mode: z.enum(["accurate", "aggressive", "fast"]).default("accurate"),
+  entities: z.array(redactPIIEntitySchema).optional(),
+  replaceStyle: z.enum(["tag", "mask", "remove"]).default("tag"),
+});
+export type RedactPIIOptions = z.infer<typeof redactPIIOptionsSchema>;
+
+// Boolean is the common case. Object form is for callers who want to
+// tune. After parse: `true` normalizes to defaults; `false` / unset
+// → `undefined`. Downstream code only has to check truthiness.
+const redactPIISchema = z
+  .union([z.boolean(), redactPIIOptionsSchema])
+  .optional()
+  .transform(v => {
+    if (v === undefined || v === false) return undefined;
+    if (v === true) return redactPIIOptionsSchema.parse({});
+    return v;
+  });
+// inferred shape: RedactPIIOptions | undefined after the transform
+
 const baseScrapeOptions = z.strictObject({
   formats: z
     .preprocess(
@@ -598,7 +643,7 @@ const baseScrapeOptions = z.strictObject({
   minAge: z.int().gte(0).optional(),
   storeInCache: z.boolean().prefault(true),
   lockdown: z.boolean().prefault(false),
-  redactPII: z.boolean().prefault(false),
+  redactPII: redactPIISchema,
 
   profile: z
     .object({

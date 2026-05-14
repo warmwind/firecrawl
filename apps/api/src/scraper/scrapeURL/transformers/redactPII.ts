@@ -27,6 +27,10 @@ export async function performRedactPII(
     text: document.markdown,
     url: meta.url,
     logger: meta.logger,
+    // meta.options.redactPII is normalized by the Zod transform —
+    // truthy here means it's the options object; falsy was already
+    // bailed out of above.
+    options: meta.options.redactPII || undefined,
   });
   return document;
 }
