@@ -102,7 +102,7 @@ export const createMonitorSchema = z.strictObject({
   notification: monitorNotificationSchema,
   targets: z.array(monitorTargetSchema).min(1).max(50),
   retentionDays: z.number().int().positive().max(365).optional().default(30),
-  goal: z.string().max(2000).optional(),
+  goal: z.string().max(2000).nullish(),
   judgeEnabled: z.boolean().optional(),
 });
 
