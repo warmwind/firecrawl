@@ -29,7 +29,7 @@ export async function concurrencyCheckController(
     success: true,
     concurrency: activeJobsOfTeam.length,
     maxConcurrency: Math.max(
-      req.acuc?.concurrency ?? 0,
+      req.acuc?.concurrency ?? 2,
       autumnConcurrency ?? 0,
     ),
   });
