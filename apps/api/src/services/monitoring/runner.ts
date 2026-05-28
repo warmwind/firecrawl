@@ -31,6 +31,7 @@ import {
   getMonitorCheck,
   getMonitorForUpdate,
   getMonitorPage,
+  calculateMonitorCheckActualCredits,
   countMonitorCheckPages,
   hashMonitorUrl,
   insertMonitorCheckPages,
@@ -612,8 +613,9 @@ async function billMonitorCheck(params: {
   actualCredits: number;
   lockId: string | null;
 }): Promise<void> {
+  let finalizedInAutumn = false;
   if (params.lockId) {
-    await autumnService.finalizeCreditsLock({
+    finalizedInAutumn = await autumnService.finalizeCreditsLock({
       lockId: params.lockId,
       action: "confirm",
       overrideValue: params.actualCredits,
@@ -638,7 +640,7 @@ async function billMonitorCheck(params: {
       timestamp: new Date().toISOString(),
       originating_job_id: params.check.id,
       api_key_id: null,
-      autumnTrackInRequest: Boolean(params.lockId),
+      autumnTrackInRequest: finalizedInAutumn,
     },
     {
       jobId: uuidv7(),
@@ -1331,7 +1333,9 @@ export async function reconcileRunningMonitorChecks(
         countMonitorCheckPages({ checkId: check.id, status: "error" }),
       ]);
       const totalPages = same + changed + newCount + removed + errorCount;
-      const actualCredits = totalPages;
+      const actualCredits = await calculateMonitorCheckActualCredits({
+        checkId: check.id,
+      });
 
       let finalized = await updateMonitorCheck(check.id, {
         status: errorCount > 0 ? "partial" : "completed",

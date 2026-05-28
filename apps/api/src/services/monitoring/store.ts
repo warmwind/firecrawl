@@ -28,7 +28,84 @@ function ensureTargetIds(targets: Array<Record<string, any>>): MonitorTarget[] {
   })) as MonitorTarget[];
 }
 
-function estimateTargetCredits(target: MonitorTarget): number {
+function formatType(format: unknown): string | null {
+  if (typeof format === "string") return format;
+  if (
+    format &&
+    typeof format === "object" &&
+    "type" in format &&
+    typeof format.type === "string"
+  ) {
+    return format.type;
+  }
+  return null;
+}
+
+function hasFormatOfType(formats: unknown, type: string): boolean {
+  return (
+    Array.isArray(formats) &&
+    formats.some(format => formatType(format) === type)
+  );
+}
+
+function requestsJsonChangeTracking(formats: unknown): boolean {
+  if (!Array.isArray(formats)) return false;
+  return formats.some(format => {
+    if (
+      !format ||
+      typeof format !== "object" ||
+      !("type" in format) ||
+      format.type !== "changeTracking"
+    ) {
+      return false;
+    }
+    const modes = "modes" in format ? format.modes : undefined;
+    return Array.isArray(modes) && modes.includes("json");
+  });
+}
+
+function estimateBaseCreditsPerPage(
+  options: MonitorTarget["scrapeOptions"],
+): number {
+  const formats = options?.formats;
+  let credits = 1;
+
+  if (hasFormatOfType(formats, "json") || requestsJsonChangeTracking(formats)) {
+    credits = 5;
+  }
+
+  if (
+    hasFormatOfType(formats, "question") ||
+    hasFormatOfType(formats, "query")
+  ) {
+    credits += 4;
+  }
+  if (hasFormatOfType(formats, "highlights")) credits += 4;
+  if (hasFormatOfType(formats, "audio")) credits += 4;
+  if (hasFormatOfType(formats, "video")) credits += 4;
+
+  if (options?.proxy === "stealth" || options?.proxy === "enhanced") {
+    credits += 4;
+  }
+  if (options?.lockdown) credits += 4;
+
+  return credits;
+}
+
+function estimateTargetBaseCredits(target: MonitorTarget): number {
+  const creditsPerPage = estimateBaseCreditsPerPage(target.scrapeOptions);
+  if (target.type === "scrape") {
+    return target.urls.length * creditsPerPage;
+  }
+
+  const limit =
+    typeof target.crawlOptions?.limit === "number"
+      ? target.crawlOptions.limit
+      : 10000;
+  return Math.max(1, limit) * creditsPerPage;
+}
+
+function estimateTargetPageCount(target: MonitorTarget): number {
   if (target.type === "scrape") {
     return target.urls.length;
   }
@@ -44,11 +121,14 @@ export function estimateMonitorCreditsPerRun(
   targets: MonitorTarget[],
   judgeEnabled: boolean = false,
 ): number {
-  const scrapeCredits = targets.reduce(
-    (sum, target) => sum + estimateTargetCredits(target),
+  const baseCredits = targets.reduce(
+    (sum, target) => sum + estimateTargetBaseCredits(target),
     0,
   );
-  return judgeEnabled ? scrapeCredits * 2 : scrapeCredits;
+  const judgeCredits = judgeEnabled
+    ? targets.reduce((sum, target) => sum + estimateTargetPageCount(target), 0)
+    : 0;
+  return baseCredits + judgeCredits;
 }
 
 function toMonitorSummary(check: MonitorCheckRow): MonitorSummary {
@@ -559,6 +639,49 @@ export async function countMonitorCheckPages(params: {
 
     const batch = data ?? [];
     total += batch.length;
+    if (batch.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return total;
+}
+
+export function calculateMonitorCheckActualCreditsFromPages(
+  pages: Array<{ metadata?: unknown; judgment?: unknown; status?: string }>,
+): number {
+  return pages.reduce((total, page) => {
+    const metadata = page.metadata as { creditsUsed?: unknown } | null;
+    const recordedCredits = metadata?.creditsUsed;
+    const baseCredits =
+      typeof recordedCredits === "number" && Number.isFinite(recordedCredits)
+        ? recordedCredits
+        : page.status === "removed"
+          ? 0
+          : 1;
+    const judgeCredits = page.judgment != null ? 1 : 0;
+    return total + baseCredits + judgeCredits;
+  }, 0);
+}
+
+export async function calculateMonitorCheckActualCredits(params: {
+  checkId: string;
+}): Promise<number> {
+  const pageSize = 1000;
+  let total = 0;
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase_rr_service
+      .from("monitor_check_pages")
+      .select("metadata, judgment, status")
+      .eq("check_id", params.checkId)
+      .range(offset, offset + pageSize - 1);
+
+    throwIfError(error, "Failed to calculate monitor check credits");
+
+    const batch = data ?? [];
+    total += calculateMonitorCheckActualCreditsFromPages(batch);
+
     if (batch.length < pageSize) break;
     offset += pageSize;
   }
