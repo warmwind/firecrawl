@@ -41,6 +41,13 @@ import {
   type WebhookLogRow,
 } from "../../services/webhook/logs";
 import { WebhookEvent } from "../../services/webhook";
+import {
+  confirmRecipientByToken,
+  getMonitorNameById,
+  listMonitorEmailRecipients,
+  unsubscribeRecipientByToken,
+} from "../../services/monitoring/email_recipients";
+import { syncMonitorEmailRecipients } from "../../services/monitoring/email_recipients_sync";
 
 const logger = _logger.child({ module: "monitor-controller" });
 
@@ -67,7 +74,17 @@ function rejectZdr(
   return false;
 }
 
-function serializeMonitor(monitor: any) {
+function serializeMonitor(
+  monitor: any,
+  options?: {
+    emailRecipientSubscriptions?: Array<{
+      email: string;
+      status: "pending" | "confirmed" | "unsubscribed";
+      source: "team" | "opt_in" | "legacy";
+      confirmationEmailSent?: boolean;
+    }>;
+  },
+) {
   return {
     id: monitor.id,
     name: monitor.name,
@@ -82,6 +99,9 @@ function serializeMonitor(monitor: any) {
     targets: monitor.targets,
     webhook: monitor.webhook,
     notification: monitor.notification,
+    ...(options?.emailRecipientSubscriptions !== undefined
+      ? { emailRecipientSubscriptions: options.emailRecipientSubscriptions }
+      : {}),
     retentionDays: monitor.retention_days,
     estimatedCreditsPerMonth: monitor.estimated_credits_per_month,
     lastCheckSummary: monitor.last_check_summary,
@@ -90,6 +110,16 @@ function serializeMonitor(monitor: any) {
     createdAt: monitor.created_at,
     updatedAt: monitor.updated_at,
   };
+}
+
+async function loadEmailRecipientSubscriptions(monitorId: string) {
+  const rows = await listMonitorEmailRecipients(monitorId);
+  return rows.map(r => ({
+    email: r.email,
+    status: r.status,
+    source: r.source,
+    confirmationEmailSent: r.confirmation_sent_at !== null,
+  }));
 }
 
 function overlayWebhookLog<T extends { notificationStatus: any }>(
@@ -190,9 +220,22 @@ export async function createMonitorController(
     }),
   );
 
+  // Reconcile per-recipient opt-in records. Team members are auto-confirmed
+  // here; external recipients receive a one-time confirmation email and
+  // start in "pending" until they click the link.
+  const sync = await syncMonitorEmailRecipients({ monitor }).catch(error => {
+    logger.warn("Failed to sync monitor email recipients on create", {
+      error,
+      monitorId: monitor.id,
+    });
+    return { recipients: [] };
+  });
+
   res.status(200).json({
     success: true,
-    data: serializeMonitor(monitor),
+    data: serializeMonitor(monitor, {
+      emailRecipientSubscriptions: sync.recipients,
+    }),
   });
 }
 
@@ -209,7 +252,7 @@ export async function listMonitorsController(
 
   res.status(200).json({
     success: true,
-    data: monitors.map(serializeMonitor),
+    data: monitors.map(monitor => serializeMonitor(monitor)),
   });
 }
 
@@ -223,9 +266,21 @@ export async function getMonitorController(
     return res.status(404).json({ success: false, error: "Monitor not found" });
   }
 
+  const subscriptions = await loadEmailRecipientSubscriptions(monitorId).catch(
+    error => {
+      logger.warn("Failed to load email recipient subscriptions", {
+        error,
+        monitorId,
+      });
+      return [];
+    },
+  );
+
   res.status(200).json({
     success: true,
-    data: serializeMonitor(monitor),
+    data: serializeMonitor(monitor, {
+      emailRecipientSubscriptions: subscriptions,
+    }),
   });
 }
 
@@ -303,9 +358,29 @@ export async function updateMonitorController(
     }),
   );
 
+  // Re-sync per-recipient opt-in only if the notification config was touched
+  // — avoids hitting the recipients table on every unrelated update.
+  let subscriptions: Awaited<
+    ReturnType<typeof loadEmailRecipientSubscriptions>
+  > = [];
+  if (input.notification !== undefined) {
+    const sync = await syncMonitorEmailRecipients({ monitor }).catch(error => {
+      logger.warn("Failed to sync monitor email recipients on update", {
+        error,
+        monitorId: monitor.id,
+      });
+      return { recipients: [] };
+    });
+    subscriptions = sync.recipients;
+  } else {
+    subscriptions = await loadEmailRecipientSubscriptions(monitor.id);
+  }
+
   res.status(200).json({
     success: true,
-    data: serializeMonitor(monitor),
+    data: serializeMonitor(monitor, {
+      emailRecipientSubscriptions: subscriptions,
+    }),
   });
 }
 
@@ -499,4 +574,150 @@ export async function getMonitorCheckController(
       next,
     },
   });
+}
+
+// =========================================================================
+// Email opt-in / opt-out endpoints
+// =========================================================================
+//
+// These endpoints back the public confirm/unsubscribe pages served by
+// firecrawl-web. The web page POSTs the token from email links and renders
+// the JSON response with its own branding. The token IS the auth here —
+// recipients aren't necessarily Firecrawl users, so no API key is required.
+// POSTs (not GETs) are used so passive link scanners / preview tools that
+// hit the dashboard URL don't accidentally consume the token.
+
+const emailActionBodySchema = z.object({
+  // base64url of 32 random bytes = 43 chars. We accept up to 64 to leave
+  // room for future formats without breaking old links.
+  token: z.string().min(16).max(64),
+});
+
+type EmailActionResponse =
+  | {
+      success: true;
+      // What actually happened. The page renders different copy per state.
+      result: "confirmed" | "already_confirmed" | "unsubscribed" | "already_unsubscribed";
+      email: string;
+      monitorName: string | null;
+    }
+  | {
+      success: false;
+      error: "invalid_token" | "not_found" | "internal_error";
+    };
+
+function parseTokenFromRequest(req: any): string | null {
+  // Body for POST, query for backwards compat / curl testing.
+  const candidate =
+    (req.body && typeof req.body === "object" ? (req.body as any).token : null) ??
+    (req.query && typeof req.query === "object" ? (req.query as any).token : null);
+  const parsed = emailActionBodySchema.safeParse({ token: candidate });
+  return parsed.success ? parsed.data.token : null;
+}
+
+export async function confirmMonitorEmailController(
+  req: { body?: unknown; query?: unknown },
+  res: Response,
+) {
+  const token = parseTokenFromRequest(req);
+  if (!token) {
+    const body: EmailActionResponse = {
+      success: false,
+      error: "invalid_token",
+    };
+    return res.status(400).json(body);
+  }
+
+  try {
+    const row = await confirmRecipientByToken(token);
+    if (!row) {
+      const body: EmailActionResponse = {
+        success: false,
+        error: "not_found",
+      };
+      return res.status(404).json(body);
+    }
+
+    const monitorName = await getMonitorNameById(row.monitor_id);
+
+    let result: "confirmed" | "already_confirmed" | "already_unsubscribed";
+    if (row.status === "unsubscribed") {
+      result = "already_unsubscribed";
+    } else if (
+      row.confirmed_at !== null &&
+      // confirmRecipientByToken is a no-op when already confirmed: confirmed_at
+      // stays unchanged. We can't perfectly tell whether this call did the
+      // confirmation, but for the user-visible copy the distinction doesn't
+      // matter — "you're subscribed" is correct either way. We still expose
+      // already_confirmed so the page can show a subtle "no change" note.
+      new Date().getTime() - new Date(row.confirmed_at).getTime() > 5_000
+    ) {
+      result = "already_confirmed";
+    } else {
+      result = "confirmed";
+    }
+
+    const body: EmailActionResponse = {
+      success: true,
+      result,
+      email: row.email,
+      monitorName,
+    };
+    return res.status(200).json(body);
+  } catch (error) {
+    logger.error("Failed to confirm monitor email recipient", { error });
+    const body: EmailActionResponse = {
+      success: false,
+      error: "internal_error",
+    };
+    return res.status(500).json(body);
+  }
+}
+
+export async function unsubscribeMonitorEmailController(
+  req: { body?: unknown; query?: unknown },
+  res: Response,
+) {
+  const token = parseTokenFromRequest(req);
+  if (!token) {
+    const body: EmailActionResponse = {
+      success: false,
+      error: "invalid_token",
+    };
+    return res.status(400).json(body);
+  }
+
+  try {
+    const row = await unsubscribeRecipientByToken(token);
+    if (!row) {
+      const body: EmailActionResponse = {
+        success: false,
+        error: "not_found",
+      };
+      return res.status(404).json(body);
+    }
+
+    const monitorName = await getMonitorNameById(row.monitor_id);
+
+    const result: "unsubscribed" | "already_unsubscribed" =
+      row.unsubscribed_at !== null &&
+      new Date().getTime() - new Date(row.unsubscribed_at).getTime() > 5_000
+        ? "already_unsubscribed"
+        : "unsubscribed";
+
+    const body: EmailActionResponse = {
+      success: true,
+      result,
+      email: row.email,
+      monitorName,
+    };
+    return res.status(200).json(body);
+  } catch (error) {
+    logger.error("Failed to unsubscribe monitor email recipient", { error });
+    const body: EmailActionResponse = {
+      success: false,
+      error: "internal_error",
+    };
+    return res.status(500).json(body);
+  }
 }

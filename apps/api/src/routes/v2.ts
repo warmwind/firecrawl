@@ -68,6 +68,7 @@ import {
   scrapeStopInteractiveBrowserController,
 } from "../controllers/v2/scrape-browser";
 import {
+  confirmMonitorEmailController,
   createMonitorController,
   deleteMonitorController,
   getMonitorCheckController,
@@ -75,6 +76,7 @@ import {
   listMonitorChecksController,
   listMonitorsController,
   runMonitorController,
+  unsubscribeMonitorEmailController,
   updateMonitorController,
 } from "../controllers/v2/monitor";
 
@@ -482,6 +484,18 @@ v2Router.get(
   "/monitor",
   authMiddleware(RateLimiterMode.CrawlStatus),
   wrap(listMonitorsController),
+);
+
+// Public email opt-in/out endpoints. No auth — the token is the auth.
+// These back the public confirm/unsubscribe pages served by firecrawl-web;
+// the page POSTs the token from the email link and renders the response.
+// Registered before /monitor/:monitorId so "email" isn't captured as a
+// monitor UUID. POST-only on purpose: passive link scanners that issue GETs
+// against the dashboard URL never touch this endpoint.
+v2Router.post("/monitor/email/confirm", wrap(confirmMonitorEmailController));
+v2Router.post(
+  "/monitor/email/unsubscribe",
+  wrap(unsubscribeMonitorEmailController),
 );
 
 v2Router.get(

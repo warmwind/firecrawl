@@ -10,6 +10,8 @@ import {
   monitorCheckRaw,
   monitorCreateRaw,
   monitorDeleteRaw,
+  monitorEmailConfirmRaw,
+  monitorEmailUnsubscribeRaw,
   monitorGetRaw,
   monitorListRaw,
   monitorPatchRaw,
@@ -307,6 +309,117 @@ describeIf(ALLOW_TEST_SUITE_WEBSITE && !TEST_SELF_HOST)("/v2/monitor", () => {
     },
     2 * scrapeTimeout,
   );
+
+  describe("email recipient opt-in", () => {
+    function externalRecipient(): string {
+      // Random throwaway address. Real Resend isn't called in the test API,
+      // but the address still needs to look valid for the API to accept it.
+      const id = Math.random().toString(36).slice(2, 10);
+      return `optin-${id}@external-test.example`;
+    }
+
+    it("starts external recipients as pending without sending notifications", async () => {
+      const recipient = externalRecipient();
+      const create = await monitorCreateRaw(
+        {
+          name: "opt-in monitor",
+          schedule: { cron: "*/30 * * * *", timezone: "UTC" },
+          targets: [
+            {
+              type: "scrape",
+              urls: [createTestIdUrl()],
+              scrapeOptions: { formats: ["markdown"] },
+            },
+          ],
+          notification: {
+            email: { enabled: true, recipients: [recipient] },
+          },
+        },
+        identity,
+      );
+      expect(create.statusCode).toBe(200);
+      expect(create.body.data.emailRecipientSubscriptions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            email: recipient.toLowerCase(),
+            status: "pending",
+            source: "opt_in",
+          }),
+        ]),
+      );
+
+      const get = await monitorGetRaw(create.body.data.id, identity);
+      expect(get.body.data.emailRecipientSubscriptions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            email: recipient.toLowerCase(),
+            status: "pending",
+          }),
+        ]),
+      );
+
+      await monitorDeleteRaw(create.body.data.id, identity);
+    });
+
+    it("rejects malformed confirm/unsubscribe tokens with a 400 JSON error", async () => {
+      const badConfirm = await monitorEmailConfirmRaw("x");
+      expect(badConfirm.statusCode).toBe(400);
+      expect(badConfirm.body).toEqual({
+        success: false,
+        error: "invalid_token",
+      });
+
+      const badUnsub = await monitorEmailUnsubscribeRaw("x");
+      expect(badUnsub.statusCode).toBe(400);
+      expect(badUnsub.body).toEqual({
+        success: false,
+        error: "invalid_token",
+      });
+    });
+
+    it("returns 404 JSON for unknown but well-formed tokens", async () => {
+      const unknownToken = "a".repeat(43);
+
+      const confirm = await monitorEmailConfirmRaw(unknownToken);
+      expect(confirm.statusCode).toBe(404);
+      expect(confirm.body).toEqual({
+        success: false,
+        error: "not_found",
+      });
+
+      const unsub = await monitorEmailUnsubscribeRaw(unknownToken);
+      expect(unsub.statusCode).toBe(404);
+      expect(unsub.body).toEqual({
+        success: false,
+        error: "not_found",
+      });
+    });
+
+    it("does not require opt-in when recipients are unset (team-default path)", async () => {
+      // Falls back to team members in send path; create-time sync only runs
+      // against explicit recipients, so emailRecipientSubscriptions should
+      // be empty here.
+      const create = await monitorCreateRaw(
+        {
+          name: "team default monitor",
+          schedule: { cron: "*/30 * * * *", timezone: "UTC" },
+          targets: [
+            {
+              type: "scrape",
+              urls: [createTestIdUrl()],
+              scrapeOptions: { formats: ["markdown"] },
+            },
+          ],
+          notification: { email: { enabled: true } },
+        },
+        identity,
+      );
+      expect(create.statusCode).toBe(200);
+      expect(create.body.data.emailRecipientSubscriptions).toEqual([]);
+
+      await monitorDeleteRaw(create.body.data.id, identity);
+    });
+  });
 
   it(
     "accepts mixed json + git-diff changeTracking modes",
