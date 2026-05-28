@@ -148,6 +148,20 @@ async function fetchRecipientByMonitorEmail(
   return (data ?? null) as MonitorEmailRecipientRow | null;
 }
 
+// Reads from the write client to avoid read-replica lag when we need the
+// authoritative current state right after a conditional UPDATE.
+async function fetchRecipientByIdPrimary(
+  id: string,
+): Promise<MonitorEmailRecipientRow | null> {
+  const { data, error } = await supabase_service
+    .from("monitor_email_recipients")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  throwIfError(error, "Failed to look up monitor email recipient by id");
+  return (data ?? null) as MonitorEmailRecipientRow | null;
+}
+
 // Idempotent: existing rows are returned unchanged so prior unsubscribe
 // decisions persist across monitor edits. The unique (monitor_id, email)
 // constraint is the source of truth — a TOCTOU between the SELECT and the
@@ -223,16 +237,23 @@ export async function confirmRecipientByToken(
   // Unsubscribe is permanent — never let a confirm link reverse it.
   if (row.status === "unsubscribed") return row;
 
+  // Conditional UPDATE: only transition pending → confirmed. If status flips
+  // (e.g. concurrent unsubscribe) between our SELECT and this UPDATE we
+  // affect 0 rows; re-fetch and return the actual current state so an
+  // in-flight confirm can't silently overwrite a terminal unsubscribe.
   const now = new Date().toISOString();
   const { data, error } = await supabase_service
     .from("monitor_email_recipients")
     .update({ status: "confirmed", confirmed_at: now, updated_at: now })
     .eq("id", row.id)
+    .eq("status", "pending")
     .select("*")
-    .single();
+    .maybeSingle();
 
   throwIfError(error, "Failed to confirm monitor email recipient");
-  return data as MonitorEmailRecipientRow;
+  if (data) return data as MonitorEmailRecipientRow;
+
+  return await fetchRecipientByIdPrimary(row.id);
 }
 
 export async function unsubscribeRecipientByToken(
@@ -242,16 +263,22 @@ export async function unsubscribeRecipientByToken(
   if (!row) return null;
   if (row.status === "unsubscribed") return row;
 
+  // Conditional UPDATE: only writes when the row isn't already unsubscribed,
+  // so two racing unsubscribes don't double-write timestamps. 0 rows here
+  // means a concurrent call beat us to the terminal state.
   const now = new Date().toISOString();
   const { data, error } = await supabase_service
     .from("monitor_email_recipients")
     .update({ status: "unsubscribed", unsubscribed_at: now, updated_at: now })
     .eq("id", row.id)
+    .neq("status", "unsubscribed")
     .select("*")
-    .single();
+    .maybeSingle();
 
   throwIfError(error, "Failed to unsubscribe monitor email recipient");
-  return data as MonitorEmailRecipientRow;
+  if (data) return data as MonitorEmailRecipientRow;
+
+  return await fetchRecipientByIdPrimary(row.id);
 }
 
 export async function touchRecipientsNotified(

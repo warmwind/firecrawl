@@ -11,6 +11,7 @@ import {
   monitorCreateRaw,
   monitorDeleteRaw,
   monitorEmailConfirmRaw,
+  monitorEmailConfirmRawViaQuery,
   monitorEmailUnsubscribeRaw,
   monitorGetRaw,
   monitorListRaw,
@@ -370,6 +371,18 @@ describeIf(ALLOW_TEST_SUITE_WEBSITE && !TEST_SELF_HOST)("/v2/monitor", () => {
       const badUnsub = await monitorEmailUnsubscribeRaw("x");
       expect(badUnsub.statusCode).toBe(400);
       expect(badUnsub.body).toEqual({
+        success: false,
+        error: "invalid_token",
+      });
+    });
+
+    it("rejects tokens sent in the query string (body-only)", async () => {
+      // Tokens in URLs leak into access/proxy logs and APM URL tags, so
+      // the controller deliberately ignores query params.
+      const unknownToken = "a".repeat(43);
+      const response = await monitorEmailConfirmRawViaQuery(unknownToken);
+      expect(response.statusCode).toBe(400);
+      expect(response.body).toEqual({
         success: false,
         error: "invalid_token",
       });

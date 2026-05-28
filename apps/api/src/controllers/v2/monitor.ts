@@ -593,16 +593,18 @@ type EmailActionResponse =
       error: "invalid_token" | "not_found" | "internal_error";
     };
 
-function parseTokenFromRequest(req: any): string | null {
+
+function parseTokenFromRequest(req: { body?: unknown }): string | null {
   const candidate =
-    (req.body && typeof req.body === "object" ? (req.body as any).token : null) ??
-    (req.query && typeof req.query === "object" ? (req.query as any).token : null);
+    req.body && typeof req.body === "object"
+      ? (req.body as { token?: unknown }).token
+      : null;
   const parsed = emailActionBodySchema.safeParse({ token: candidate });
   return parsed.success ? parsed.data.token : null;
 }
 
 export async function confirmMonitorEmailController(
-  req: { body?: unknown; query?: unknown },
+  req: { body?: unknown },
   res: Response,
 ) {
   const token = parseTokenFromRequest(req);
@@ -658,7 +660,7 @@ export async function confirmMonitorEmailController(
 }
 
 export async function unsubscribeMonitorEmailController(
-  req: { body?: unknown; query?: unknown },
+  req: { body?: unknown },
   res: Response,
 ) {
   const token = parseTokenFromRequest(req);

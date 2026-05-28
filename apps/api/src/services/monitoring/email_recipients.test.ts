@@ -1,31 +1,58 @@
 type QueryResult = { data: unknown; error: unknown };
+type ChainOp = "select" | "insert" | "update" | "delete" | "unknown";
 
 const fromMock = jest.fn();
-const selectMock = jest.fn();
-const insertMock = jest.fn();
-const eqMonitorMock = jest.fn();
-const eqEmailMock = jest.fn();
-const maybeSingleSelectMock = jest.fn();
-const maybeSingleInsertMock = jest.fn();
-const insertSelectMock = jest.fn();
 
-function configureSupabaseMocks(opts: {
-  selectMaybeSingle: () => Promise<QueryResult>;
-  insertMaybeSingle?: () => Promise<QueryResult>;
-}) {
-  maybeSingleSelectMock.mockImplementation(opts.selectMaybeSingle);
-  maybeSingleInsertMock.mockImplementation(
-    opts.insertMaybeSingle ?? (() => Promise.resolve({ data: null, error: null })),
-  );
-  eqEmailMock.mockReturnValue({ maybeSingle: maybeSingleSelectMock });
-  eqMonitorMock.mockReturnValue({ eq: eqEmailMock });
-  insertSelectMock.mockReturnValue({ maybeSingle: maybeSingleInsertMock });
-  selectMock.mockReturnValue({ eq: eqMonitorMock });
-  insertMock.mockReturnValue({ select: insertSelectMock });
-  fromMock.mockReturnValue({
-    select: selectMock,
-    insert: insertMock,
-  });
+// Each test queues responses in the order the code under test will execute
+// queries. The fluent chain swallows any sequence of select/insert/update/
+// eq/neq calls and resolves at .maybeSingle() / .single() with the next
+// queued result. Tests stay explicit about query order without coupling to
+// the precise method chain shape.
+type QueuedResponse = (op: ChainOp) => Promise<QueryResult>;
+let queue: QueuedResponse[] = [];
+
+function queueResponses(responses: QueuedResponse[]): void {
+  queue = [...responses];
+}
+
+function makeChain(): any {
+  let op: ChainOp | null = null;
+  const setOp = (next: ChainOp) => {
+    if (op === null) op = next;
+  };
+  const resolve = (): Promise<QueryResult> => {
+    const next = queue.shift();
+    if (!next) {
+      throw new Error(
+        `No queued Supabase response for op=${op ?? "unknown"} (queue exhausted)`,
+      );
+    }
+    return next(op ?? "unknown");
+  };
+  const builder: any = {
+    select: () => {
+      setOp("select");
+      return builder;
+    },
+    insert: () => {
+      setOp("insert");
+      return builder;
+    },
+    update: () => {
+      setOp("update");
+      return builder;
+    },
+    delete: () => {
+      setOp("delete");
+      return builder;
+    },
+    eq: () => builder,
+    neq: () => builder,
+    in: () => builder,
+    maybeSingle: resolve,
+    single: resolve,
+  };
+  return builder;
 }
 
 jest.mock("../supabase", () => ({
@@ -37,28 +64,17 @@ jest.mock("../supabase", () => ({
   },
 }));
 
-import { ensureMonitorEmailRecipient } from "./email_recipients";
+import {
+  confirmRecipientByToken,
+  ensureMonitorEmailRecipient,
+  unsubscribeRecipientByToken,
+} from "./email_recipients";
 
 beforeEach(() => {
+  queue = [];
   fromMock.mockReset();
-  selectMock.mockReset();
-  insertMock.mockReset();
-  eqMonitorMock.mockReset();
-  eqEmailMock.mockReset();
-  maybeSingleSelectMock.mockReset();
-  maybeSingleInsertMock.mockReset();
-  insertSelectMock.mockReset();
+  fromMock.mockImplementation(() => makeChain());
 });
-
-const baseInput = {
-  monitorId: "monitor-1",
-  teamId: "team-1",
-  input: {
-    email: "alerts@example.com",
-    source: "opt_in" as const,
-    status: "pending" as const,
-  },
-};
 
 function recipientRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -79,85 +95,189 @@ function recipientRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const baseEnsureInput = {
+  monitorId: "monitor-1",
+  teamId: "team-1",
+  input: {
+    email: "alerts@example.com",
+    source: "opt_in" as const,
+    status: "pending" as const,
+  },
+};
+
+const ok = (data: unknown): QueuedResponse => () =>
+  Promise.resolve({ data, error: null });
+const fail = (error: unknown): QueuedResponse => () =>
+  Promise.resolve({ data: null, error });
+
 describe("ensureMonitorEmailRecipient", () => {
   it("returns existing row when the recipient already exists (no insert)", async () => {
     const existing = recipientRow({ status: "confirmed", source: "team" });
-    configureSupabaseMocks({
-      selectMaybeSingle: () => Promise.resolve({ data: existing, error: null }),
-    });
+    queueResponses([ok(existing)]);
 
-    const result = await ensureMonitorEmailRecipient(baseInput);
+    const result = await ensureMonitorEmailRecipient(baseEnsureInput);
 
     expect(result).toEqual({ row: existing, created: false });
-    expect(insertMock).not.toHaveBeenCalled();
+    expect(queue.length).toBe(0);
   });
 
   it("inserts and returns created=true when no row exists", async () => {
     const inserted = recipientRow();
-    configureSupabaseMocks({
-      selectMaybeSingle: () => Promise.resolve({ data: null, error: null }),
-      insertMaybeSingle: () => Promise.resolve({ data: inserted, error: null }),
-    });
+    queueResponses([ok(null), ok(inserted)]);
 
-    const result = await ensureMonitorEmailRecipient(baseInput);
+    const result = await ensureMonitorEmailRecipient(baseEnsureInput);
 
     expect(result).toEqual({ row: inserted, created: true });
-    expect(insertMock).toHaveBeenCalledTimes(1);
   });
 
   it("treats a concurrent-insert unique violation as not-created (no throw)", async () => {
-    // Concurrent sync wrote the row between our SELECT and INSERT.
     const winnerRow = recipientRow({ id: "rec-winner" });
-    let selectCalls = 0;
-    configureSupabaseMocks({
-      selectMaybeSingle: () => {
-        selectCalls += 1;
-        if (selectCalls === 1) return Promise.resolve({ data: null, error: null });
-        return Promise.resolve({ data: winnerRow, error: null });
-      },
-      insertMaybeSingle: () =>
-        Promise.resolve({
-          data: null,
-          error: { code: "23505", message: "duplicate key" },
-        }),
-    });
+    queueResponses([
+      ok(null),
+      fail({ code: "23505", message: "duplicate key" }),
+      ok(winnerRow),
+    ]);
 
-    const result = await ensureMonitorEmailRecipient(baseInput);
+    const result = await ensureMonitorEmailRecipient(baseEnsureInput);
 
     expect(result).toEqual({ row: winnerRow, created: false });
-    expect(selectCalls).toBe(2);
   });
 
   it("rethrows non-unique insert errors", async () => {
-    configureSupabaseMocks({
-      selectMaybeSingle: () => Promise.resolve({ data: null, error: null }),
-      insertMaybeSingle: () =>
-        Promise.resolve({
-          data: null,
-          error: { code: "42501", message: "permission denied" },
-        }),
-    });
+    queueResponses([
+      ok(null),
+      fail({ code: "42501", message: "permission denied" }),
+    ]);
 
-    await expect(ensureMonitorEmailRecipient(baseInput)).rejects.toThrow(
+    await expect(ensureMonitorEmailRecipient(baseEnsureInput)).rejects.toThrow(
       /permission denied/,
     );
   });
 
   it("rethrows unique violations when no winning row can be re-fetched", async () => {
-    // Defensive: if the unique violation is on `token` (not the recipient
-    // pair) the re-fetch returns nothing and we should surface the error
-    // instead of silently lying about creation.
-    configureSupabaseMocks({
-      selectMaybeSingle: () => Promise.resolve({ data: null, error: null }),
-      insertMaybeSingle: () =>
-        Promise.resolve({
-          data: null,
-          error: { code: "23505", message: "duplicate key" },
-        }),
-    });
+    queueResponses([
+      ok(null),
+      fail({ code: "23505", message: "duplicate key" }),
+      ok(null),
+    ]);
 
-    await expect(ensureMonitorEmailRecipient(baseInput)).rejects.toThrow(
+    await expect(ensureMonitorEmailRecipient(baseEnsureInput)).rejects.toThrow(
       /duplicate key/,
     );
+  });
+});
+
+describe("confirmRecipientByToken", () => {
+  it("transitions pending → confirmed when no race", async () => {
+    const pending = recipientRow({ status: "pending" });
+    const confirmed = recipientRow({
+      status: "confirmed",
+      confirmed_at: "now",
+    });
+    queueResponses([ok(pending), ok(confirmed)]);
+
+    const result = await confirmRecipientByToken("tok-1");
+
+    expect(result).toEqual(confirmed);
+  });
+
+  it("returns the row unchanged when status is already confirmed (no UPDATE)", async () => {
+    const confirmed = recipientRow({
+      status: "confirmed",
+      confirmed_at: "now",
+    });
+    queueResponses([ok(confirmed)]);
+
+    const result = await confirmRecipientByToken("tok-1");
+
+    expect(result).toEqual(confirmed);
+  });
+
+  it("returns the row unchanged when status is unsubscribed (no UPDATE)", async () => {
+    const unsubscribed = recipientRow({
+      status: "unsubscribed",
+      unsubscribed_at: "now",
+    });
+    queueResponses([ok(unsubscribed)]);
+
+    const result = await confirmRecipientByToken("tok-1");
+
+    expect(result).toEqual(unsubscribed);
+  });
+
+  it("does NOT overwrite a racing unsubscribe — refetches and returns it", async () => {
+    // SELECT sees pending, but between SELECT and our conditional UPDATE
+    // another caller unsubscribed the row. The UPDATE WHERE status='pending'
+    // affects 0 rows, and we re-fetch to discover the unsubscribed state.
+    const pending = recipientRow({ status: "pending" });
+    const unsubscribed = recipientRow({
+      status: "unsubscribed",
+      unsubscribed_at: "now",
+    });
+    queueResponses([ok(pending), ok(null), ok(unsubscribed)]);
+
+    const result = await confirmRecipientByToken("tok-1");
+
+    expect(result).toEqual(unsubscribed);
+    expect(result?.status).toBe("unsubscribed");
+  });
+});
+
+describe("unsubscribeRecipientByToken", () => {
+  it("transitions pending → unsubscribed when no race", async () => {
+    const pending = recipientRow({ status: "pending" });
+    const unsubscribed = recipientRow({
+      status: "unsubscribed",
+      unsubscribed_at: "now",
+    });
+    queueResponses([ok(pending), ok(unsubscribed)]);
+
+    const result = await unsubscribeRecipientByToken("tok-1");
+
+    expect(result).toEqual(unsubscribed);
+  });
+
+  it("transitions confirmed → unsubscribed when no race", async () => {
+    const confirmed = recipientRow({
+      status: "confirmed",
+      confirmed_at: "now",
+    });
+    const unsubscribed = recipientRow({
+      status: "unsubscribed",
+      unsubscribed_at: "now",
+    });
+    queueResponses([ok(confirmed), ok(unsubscribed)]);
+
+    const result = await unsubscribeRecipientByToken("tok-1");
+
+    expect(result).toEqual(unsubscribed);
+  });
+
+  it("returns the row unchanged when already unsubscribed (no UPDATE)", async () => {
+    const unsubscribed = recipientRow({
+      status: "unsubscribed",
+      unsubscribed_at: "now",
+    });
+    queueResponses([ok(unsubscribed)]);
+
+    const result = await unsubscribeRecipientByToken("tok-1");
+
+    expect(result).toEqual(unsubscribed);
+  });
+
+  it("handles a racing unsubscribe by re-fetching the terminal state", async () => {
+    // SELECT sees pending; concurrent caller unsubscribes; our conditional
+    // UPDATE WHERE status != 'unsubscribed' affects 0 rows. Re-fetch
+    // confirms the terminal state.
+    const pending = recipientRow({ status: "pending" });
+    const alreadyUnsub = recipientRow({
+      status: "unsubscribed",
+      unsubscribed_at: "now",
+    });
+    queueResponses([ok(pending), ok(null), ok(alreadyUnsub)]);
+
+    const result = await unsubscribeRecipientByToken("tok-1");
+
+    expect(result).toEqual(alreadyUnsub);
   });
 });

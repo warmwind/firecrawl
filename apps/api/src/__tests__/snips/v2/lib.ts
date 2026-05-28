@@ -193,6 +193,12 @@ export async function monitorEmailUnsubscribeRaw(token: string) {
     .send({ token });
 }
 
+export async function monitorEmailConfirmRawViaQuery(token: string) {
+  return await request(TEST_API_URL)
+    .post(`/v2/monitor/email/confirm`)
+    .query({ token });
+}
+
 export async function parseRaw(
   body: {
     options?: Omit<ParseRequestInput, "file">;
