@@ -1,4 +1,8 @@
-import { ALLOW_TEST_SUITE_WEBSITE, describeIf } from "../lib";
+import {
+  ALLOW_TEST_SUITE_WEBSITE,
+  describeIf,
+  TEST_SUITE_WEBSITE,
+} from "../lib";
 import { Identity, idmux, scrapeRaw, scrapeTimeout } from "./lib";
 
 let identity: Identity;
@@ -17,7 +21,7 @@ describeIf(ALLOW_TEST_SUITE_WEBSITE)("V2 Scrape redactPII (schema)", () => {
     async () => {
       const res = await scrapeRaw(
         {
-          url: "https://firecrawl.dev",
+          url: TEST_SUITE_WEBSITE,
           formats: ["markdown"],
           redactPII: true,
         },
@@ -36,7 +40,7 @@ describeIf(ALLOW_TEST_SUITE_WEBSITE)("V2 Scrape redactPII (schema)", () => {
     async () => {
       const res = await scrapeRaw(
         {
-          url: "https://firecrawl.dev",
+          url: TEST_SUITE_WEBSITE,
           formats: ["markdown"],
           // typed as boolean, but we want to confirm the API rejects strings.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,7 +60,7 @@ describeIf(ALLOW_TEST_SUITE_WEBSITE)("V2 Scrape redactPII (schema)", () => {
     async () => {
       const res = await scrapeRaw(
         {
-          url: "https://firecrawl.dev",
+          url: TEST_SUITE_WEBSITE,
           formats: ["markdown"],
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           redactPII: {
@@ -80,7 +84,7 @@ describeIf(ALLOW_TEST_SUITE_WEBSITE)("V2 Scrape redactPII (schema)", () => {
     async () => {
       const res = await scrapeRaw(
         {
-          url: "https://firecrawl.dev",
+          url: TEST_SUITE_WEBSITE,
           formats: ["markdown"],
           // "model" is the fire-privacy internal mode, not the
           // public surface — must be rejected.
