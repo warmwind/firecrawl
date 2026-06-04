@@ -59,7 +59,7 @@ export async function generateCode(
     res = await generateText({
       model: getModel(CODEGEN_MODEL, "vertex"),
       messages,
-      temperature: 0,
+      temperature: 1.0, // even though it would be nice to have more deterministic output, google recommends keeping this at 1 for complex tasks
       maxOutputTokens: CODEGEN_MAX_TOKENS,
     });
   } catch (err) {
