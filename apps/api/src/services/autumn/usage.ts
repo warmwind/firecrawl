@@ -319,9 +319,8 @@ export async function getTeamBalance(
   };
 }
 
-// Autumn caps `balance.remaining` at 0 when `overage_allowed` is false, so it
-// can't surface negative balances for teams in overage. `granted - usage`
-// preserves the signed balance.
+// Autumn caps `balance.remaining` at 0, so it can't surface negative balances
+// for teams in overage. `granted - usage` preserves the signed balance.
 function signedRemaining(
   balance:
     | {
